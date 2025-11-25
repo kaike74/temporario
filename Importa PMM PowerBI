@@ -1,0 +1,128 @@
+function importarDadosPMM() {
+  const hoje = new Date();
+  const ano = hoje.getFullYear();
+  const mes = String(hoje.getMonth() + 1).padStart(2, '0');
+  const mesAtual = `${ano}-${mes}`;
+
+  const planilhaId = '1XqLYTbbXmmAfGUuY1uJNTTw82Ha2ByhX4pm4oB88v44';
+  const nomeDaAba = 'PMM';
+
+  const url = `https://api.audiency.io/advertiser-rest/stations/listeners/programmed-by-month?page=1&limit=1000&orderBy=name-asc&month=${mesAtual}`;
+  
+  const options = {
+    method: 'get',
+    headers: {
+      'apiKey': '9620cf74-856d-40c2-a091-248e4f322caa',
+      'Content-Type': 'application/json'
+    }
+  };
+
+  try {
+    Logger.log(`Iniciando requisição para o mês: ${mesAtual}`);
+    const response = UrlFetchApp.fetch(url, options);
+
+    if (response.getResponseCode() !== 200) {
+      Logger.log(`Resposta HTTP: ${response.getResponseCode()}`);
+      throw new Error(`Erro na requisição: ${response.getResponseCode()}`);
+    }
+
+    Logger.log('Resposta recebida com sucesso. Processando JSON...');
+    const dados = JSON.parse(response.getContentText());
+    const registros = dados.data?.lines || [];
+    Logger.log(`Total de registros recebidos: ${registros.length}`);
+
+    Logger.log('Lista completa de IDs e meses recebidos:');
+    registros.forEach((item, i) => {
+      Logger.log(`#${i + 1} - ID: ${item.id || 'SEM ID'}, Mês: ${item.informations?.month || 'null'}`);
+    });
+
+
+    const planilha = SpreadsheetApp.openById(planilhaId);
+    const aba = planilha.getSheetByName(nomeDaAba);
+    if (!aba) throw new Error('Aba "PMM" não encontrada.');
+
+    const headers = [
+      'ID da Emissora', 'Nome da Emissora', 'Data Competência',
+      '% Publico Masculino', '% Publico Feminino',
+      '% Classe A', '% Classe B', '% Classe C', '% Classe D', '% Classe E',
+      '% Idade 18 a 24 anos (A)', '% Idade 25 a 49 anos (B)', '% Idade 50+ anos (C)',
+      'Avaliação', 'Horario Inicio', 'Horario Fim', 'Ouvintes por Minuto'
+    ];
+
+    const ultimaLinha = aba.getLastRow();
+    let linhaInicial = 2;
+
+    if (ultimaLinha > 1) {
+      Logger.log('Verificando dados existentes para filtrar mês atual...');
+      const dadosExistentes = aba.getRange(2, 1, ultimaLinha - 1, headers.length).getValues();
+      const dadosFiltrados = dadosExistentes.filter(linha => {
+        const valorBruto = linha[2];
+        let valorFormatado = '';
+
+        if (Object.prototype.toString.call(valorBruto) === '[object Date]' && !isNaN(valorBruto)) {
+          const ano = valorBruto.getFullYear();
+          const mes = String(valorBruto.getMonth() + 1).padStart(2, '0');
+          valorFormatado = `${ano}-${mes}`;
+        } else {
+          valorFormatado = (valorBruto || '').toString().trim();
+        }
+
+        return valorFormatado !== mesAtual;
+      });
+
+      Logger.log(`Linhas antigas preservadas: ${dadosFiltrados.length}`);
+      aba.getRange(2, 1, aba.getMaxRows() - 1, headers.length).clearContent();
+
+      if (dadosFiltrados.length > 0) {
+        aba.getRange(2, 1, dadosFiltrados.length, headers.length).setValues(dadosFiltrados);
+        linhaInicial = dadosFiltrados.length + 2;
+      } else {
+        linhaInicial = 2;
+      }
+    }
+
+    if (aba.getLastRow() === 0) {
+      Logger.log('Planilha está vazia. Escrevendo cabeçalho...');
+      aba.getRange(1, 1, 1, headers.length).setValues([headers]);
+    }
+
+    const novasLinhas = registros
+      .filter(item => item.informations?.month)
+      .map(item => {
+        const info = item.informations || {};
+        const range = (item.ranges && item.ranges.length > 0) ? item.ranges[0] : {};
+
+        return [
+          item.id || '',
+          item.name || '',
+          (info.month || '') + '-01',
+          info.male || '',
+          info.female || '',
+          info.socialClassA || '',
+          info.socialClassB || '',
+          info.socialClassC || '',
+          info.socialClassD || '',
+          info.socialClassE || '',
+          info.ageGroupA || '',
+          info.ageGroupB || '',
+          info.ageGroupC || '',
+          info.rate || '',
+          range.from || '',
+          range.to || '',
+          range.amountPerMinute || ''
+        ];
+      });
+
+    Logger.log(`Novas linhas processadas para inserção: ${novasLinhas.length}`);
+    if (novasLinhas.length > 0) {
+      aba.getRange(linhaInicial, 1, novasLinhas.length, headers.length).setValues(novasLinhas);
+      Logger.log(`Dados inseridos com sucesso a partir da linha ${linhaInicial}`);
+    } else {
+      Logger.log('Nenhum novo dado para importar.');
+    }
+
+  } catch (e) {
+    Logger.log('Erro ao importar dados: ' + e.message);
+    Logger.log('Stack trace: ' + e.stack);
+  }
+}
