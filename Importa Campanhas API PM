@@ -1,0 +1,125 @@
+function importarDadosCampanha() {
+    const hoje = new Date();
+    const ano = hoje.getFullYear();
+    const mes = String(hoje.getMonth() + 1).padStart(2, '0');
+    const planilhaId = '1XqLYTbbXmmAfGUuY1uJNTTw82Ha2ByhX4pm4oB88v44';
+    const nomeDaAba = 'Campanhas';
+
+    const headers = [
+        'ID', 'Nome', 'Detalhes', 'Produto', 'Data de Início', 'Data de Fim', 'CPM', 'Bônus', 'Publicado', 'Programado',
+        'Tipo - Nome', 'Cliente - Nome', 'Cliente - Arquivo', 'Contrato - Nome', 'Contrato - Data de Início',
+        'Contrato - Data de Fim', 'Retroativo', 'Descrição Retroativa'
+    ];
+
+    const options = {
+        method: 'get',
+        headers: {
+            'apiKey': '9620cf74-856d-40c2-a091-248e4f322caa',
+            'Content-Type': 'application/json'
+        }
+    };
+
+    try {
+        let todosRegistros = [];
+        let pagina = 1;
+        let continuar = true;
+
+        while (continuar) {
+            const url = `https://api.audiency.io/advertiser-rest/campaigns?page=${pagina}&limit=1000&orderBy=name-asc&month=${mes}&year=${ano}`;
+            const response = UrlFetchApp.fetch(url, options);
+            if (response.getResponseCode() !== 200) throw new Error(`Erro: ${response.getResponseCode()}`);
+            
+            const dados = JSON.parse(response.getContentText());
+            const registros = dados.data?.lines || [];
+
+            todosRegistros = todosRegistros.concat(registros);
+            continuar = registros.length === 1000;
+            pagina++;
+
+            Utilities.sleep(300); // 300 ms de delay entre requisições
+        }
+
+        Logger.log(`Total de registros: ${todosRegistros.length}`);
+        
+        const planilha = SpreadsheetApp.openById(planilhaId);
+        const aba = planilha.getSheetByName(nomeDaAba);
+        if (!aba) throw new Error('Aba não encontrada.');
+
+        let linhaInicial = 2;
+        const ultimaLinha = aba.getLastRow();
+
+        if (ultimaLinha > 1) {
+            const dadosExistentes = aba.getRange(2, 1, ultimaLinha - 1, headers.length).getValues();
+            const dadosFiltrados = dadosExistentes.filter(linha => {
+                const valorBruto = linha[4]; // "Data de Início"
+                let dataReferencia;
+                if (Object.prototype.toString.call(valorBruto) === '[object Date]' && !isNaN(valorBruto)) {
+                    dataReferencia = valorBruto;
+                } else if (typeof valorBruto === 'string' && valorBruto.match(/^\d{4}-\d{2}-\d{2}$/)) {
+                    dataReferencia = new Date(valorBruto);
+                }
+                if (dataReferencia) {
+                    const anoLinha = dataReferencia.getFullYear();
+                    const mesLinha = String(dataReferencia.getMonth() + 1).padStart(2, '0');
+                    return !(anoLinha === ano && mesLinha === mes);
+                }
+                return true;
+            });
+
+            aba.getRange(2, 1, aba.getMaxRows() - 1, headers.length).clearContent();
+            if (dadosFiltrados.length > 0) {
+                aba.getRange(2, 1, dadosFiltrados.length, headers.length).setValues(dadosFiltrados);
+                linhaInicial = dadosFiltrados.length + 2;
+            }
+        }
+
+        // Remove linhas com "DELETAR"
+        for (let i = aba.getLastRow(); i >= 2; i--) {
+            const valor = aba.getRange(i, 1).getValue();
+            if (String(valor).trim().toUpperCase() === 'DELETAR') {
+                aba.deleteRow(i);
+            }
+        }
+
+        aba.getRange(1, 1, 1, headers.length).setValues([headers]);
+
+        const novasLinhas = todosRegistros
+            .filter(item => item.startDate)
+            .map(item => {
+                const range = (item.ranges && item.ranges.length > 0) ? item.ranges[0] : {};
+                return [
+                    item.id || '',
+                    item.name || '',
+                    item.details || '',
+                    item.product || '',
+                    item.startDate || '',
+                    item.endDate || '',
+                    Number(item.cpm) || 0,
+                    item.bonus || '',
+                    item.deployed || '',
+                    item.programmed || '',
+                    item.type?.name || '',
+                    item.client?.name || '',
+                    `https://api.audiency.io/advertiser-rest/files/image?token=${item.client?.file || ''}`,
+                    item.contract?.name || '',
+                    item.contract?.startDate || '',
+                    item.contract?.endDate || '',
+                    item.retroactive || '',
+                    item.retroactiveDescription || ''
+                ];
+            });
+
+        if (novasLinhas.length > 0) {
+            const totalNecessario = linhaInicial + novasLinhas.length - 1;
+            if (aba.getMaxRows() < totalNecessario) {
+                aba.insertRowsAfter(aba.getMaxRows(), totalNecessario - aba.getMaxRows());
+            }
+
+            aba.getRange(linhaInicial, 1, novasLinhas.length, headers.length).setValues(novasLinhas);
+        }
+
+    } catch (e) {
+        Logger.log('Erro ao importar dados: ' + e.message);
+        Logger.log(e.stack);
+    }
+}
