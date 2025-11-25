@@ -1,0 +1,136 @@
+function InsercoesTempoReal() {
+  const apiKey = '9620cf74-856d-40c2-a091-248e4f322caa';
+  const spreadsheetId = '1XqLYTbbXmmAfGUuY1uJNTTw82Ha2ByhX4pm4oB88v44';
+  const abaCampanhas = 'Campanhas';
+  const abaDestino = 'Inserções Campanhas Hora (ult 2 dias)';
+
+  const hoje = new Date();
+  const inicioMesAtual = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
+  const fimMesAtual = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0);
+
+  const formatarData = (data) =>
+    Utilities.formatDate(data, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+
+  const ss = SpreadsheetApp.openById(spreadsheetId);
+  const sheetCampanhas = ss.getSheetByName(abaCampanhas);
+  const sheetDestino = ss.getSheetByName(abaDestino);
+
+  if (!sheetCampanhas || !sheetDestino) {
+    Logger.log('❌ Aba "Campanhas" ou "Inserções Campanhas Hora" não encontrada.');
+    return;
+  }
+
+  const dadosCampanhas = sheetCampanhas.getDataRange().getValues();
+  const dadosDestino = sheetDestino.getDataRange().getValues();
+
+  const novoCabecalho = [
+    ['Data', 'Hora', 'ID da Campanha', 'ID da emissora', 'Nome da Emissora', 'Cidade', 'Cliente', 'Piece Type', 'UF', 'Logo Emissora']
+  ];
+
+  const dadosParaManter = [];
+
+  // Mantém apenas registros de meses anteriores
+  for (let i = 1; i < dadosDestino.length; i++) {
+    const dataInsercao = new Date(dadosDestino[i][0]);
+    if (
+      dataInsercao.getMonth() !== hoje.getMonth() ||
+      dataInsercao.getFullYear() !== hoje.getFullYear()
+    ) {
+      dadosParaManter.push(dadosDestino[i]);
+    }
+  }
+
+  const insercoesMesAtual = [];
+
+  for (let i = 1; i < dadosCampanhas.length; i++) {
+    const idCampanha = dadosCampanhas[i][0];
+    const inicioCampanha = new Date(dadosCampanhas[i][4]);
+    const fimCampanha = new Date(dadosCampanhas[i][5]);
+
+    // Verifica se campanha está dentro do mês atual
+    if (!(fimCampanha >= inicioMesAtual && inicioCampanha <= fimMesAtual)) continue;
+
+    // Define datas reais para API, limitadas ao mês atual
+    const dataInicioReal = new Date(Math.max(inicioCampanha.getTime(), inicioMesAtual.getTime()));
+    const dataFimReal = new Date(Math.min(fimCampanha.getTime(), fimMesAtual.getTime()));
+    const dataInicio = formatarData(dataInicioReal);
+    const dataFim = formatarData(dataFimReal);
+
+    Logger.log(`📌 Campanha ${idCampanha} | Início real: ${dataInicio} | Fim real: ${dataFim}`);
+
+    let page = 1;
+    let continuar = true;
+
+    while (continuar) {
+      const url = `https://api.audiency.io/advertiser-rest/reports/common/advertiser-execution?page=${page}&limit=1000&countryId=1&campaignId=${idCampanha}&stationDate=${dataInicio}&stationDate=${dataFim}`;
+
+      const options = {
+        method: 'get',
+        headers: {
+          'apiKey': apiKey,
+          'Content-Type': 'application/json'
+        },
+        muteHttpExceptions: true
+      };
+
+      try {
+        const response = UrlFetchApp.fetch(url, options);
+        const code = response.getResponseCode();
+        Logger.log(`🔗 Requisição campanha ${idCampanha}, página ${page} - Status ${code}`);
+
+        if (code !== 200) {
+          Logger.log(`❌ Código de erro ${code} na campanha ${idCampanha}`);
+          continuar = false;
+          continue;
+        }
+
+        const json = JSON.parse(response.getContentText());
+        const items = Array.isArray(json?.data?.lines) ? json.data.lines : [];
+
+        if (items.length === 0) {
+          continuar = false;
+          Logger.log(`⚠ Fim dos dados na página ${page} da campanha ${idCampanha}`);
+        } else {
+          const data = items.map(item => [
+            item.date || '',
+            item.hour || '',
+            idCampanha,
+            item.stationId || '',
+            item.stationName || '',
+            (item.city || '').replace(' / ', ', '),
+            item.client || '',
+            item.pieceType || '',
+            item.city ? item.city.split(' / ')[1] : '',
+            `https://api.audiency.io/advertiser-rest/files/image?token=${item.stationLogo || ''}`
+          ]);
+          insercoesMesAtual.push(...data);
+          Logger.log(`✅ Página ${page} da campanha ${idCampanha}: ${items.length} inserções`);
+          page++;
+        }
+
+      } catch (e) {
+        Logger.log(`❌ Erro na campanha ${idCampanha}, página ${page}: ${e}`);
+        continuar = false;
+      }
+    }
+  }
+
+
+   // Limpa tudo e reescreve cabeçalho
+  sheetDestino.clearContents();
+  sheetDestino.getRange(1, 1, 1, novoCabecalho[0].length).setValues(novoCabecalho);
+
+  // Reescreve dados antigos a partir da segunda linha, se houver
+  if (dadosParaManter.length > 0) {
+    sheetDestino.getRange(2, 1, dadosParaManter.length, novoCabecalho[0].length).setValues(dadosParaManter);
+  }
+
+  // Grava as novas inserções do mês atual
+  if (insercoesMesAtual.length > 0) {
+    const linhaInicial = dadosParaManter.length + 2; // +1 por cabeçalho, +1 porque dadosParaManter começa após cabeçalho
+    sheetDestino.getRange(linhaInicial, 1, insercoesMesAtual.length, novoCabecalho[0].length).setValues(insercoesMesAtual);
+    Logger.log(`✔ Total inserido: ${insercoesMesAtual.length} registros do mês atual`);
+  } else {
+    Logger.log('⚠ Nenhuma inserção nova encontrada para o mês atual.');
+  }
+}
