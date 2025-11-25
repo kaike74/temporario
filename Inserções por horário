@@ -1,0 +1,116 @@
+function importarInsercoesHoraUF() {
+  const apiKey = '9620cf74-856d-40c2-a091-248e4f322caa';
+  const spreadsheetId = '1XqLYTbbXmmAfGUuY1uJNTTw82Ha2ByhX4pm4oB88v44';
+  const abaCampanhas = 'Campanhas';
+  const abaDestino = 'Inserções Campanhas Hora (ult 2 dias)';
+
+  const hoje = new Date();
+  const inicioMesAtual = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
+  const fimMesAtual = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0);
+
+  const formatarData = (data) =>
+    Utilities.formatDate(data, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+
+  const ss = SpreadsheetApp.openById(spreadsheetId);
+  const sheetCampanhas = ss.getSheetByName(abaCampanhas);
+  const sheetDestino = ss.getSheetByName(abaDestino);
+
+  if (!sheetCampanhas || !sheetDestino) {
+    Logger.log('❌ Aba "Campanhas" ou "Inserções Campanhas Hora" não encontrada.');
+    return;
+  }
+
+  const dadosCampanhas = sheetCampanhas.getDataRange().getValues();
+  const campanhasValidas = new Set();
+
+  for (let i = 1; i < dadosCampanhas.length; i++) {
+    const idCampanha = dadosCampanhas[i][0];
+    const inicioCampanha = new Date(dadosCampanhas[i][4]);
+    const fimCampanha = new Date(dadosCampanhas[i][5]);
+
+    if (fimCampanha >= inicioMesAtual && inicioCampanha <= fimMesAtual) {
+      campanhasValidas.add(idCampanha);
+    }
+  }
+
+  if (campanhasValidas.size === 0) {
+    Logger.log('⚠ Nenhuma campanha válida para o mês atual.');
+    return;
+  }
+
+  const dadosDestino = sheetDestino.getDataRange().getValues();
+  const cabecalho = dadosDestino[0];
+  const dadosParaManter = [cabecalho];
+
+  for (let i = 1; i < dadosDestino.length; i++) {
+    const dataInserção = new Date(dadosDestino[i][0]);
+    if (dataInserção.getMonth() !== hoje.getMonth() || dataInserção.getFullYear() !== hoje.getFullYear()) {
+      dadosParaManter.push(dadosDestino[i]);
+    }
+  }
+
+  sheetDestino.clearContents();
+  sheetDestino.getRange(1, 1, dadosParaManter.length, cabecalho.length).setValues(dadosParaManter);
+
+  const insercoesMesAtual = [];
+
+  for (const idCampanha of campanhasValidas) {
+    const dataInicio = formatarData(inicioMesAtual);
+    const dataFim = formatarData(fimMesAtual);
+    let page = 1;
+    let continuar = true;
+
+    while (continuar) {
+      const url = `https://api.audiency.io/advertiser-rest/reports/common/advertiser-execution?page=${page}&limit=1000&countryId=1&campaignId=${idCampanha}&stationDate=${dataInicio}&stationDate=${dataFim}`;
+
+      const options = {
+        method: 'get',
+        headers: {
+          'apiKey': apiKey,
+          'Content-Type': 'application/json'
+        },
+        muteHttpExceptions: true
+      };
+
+      try {
+        Logger.log(`🔗 Página ${page} - API campanha ${idCampanha}`);
+        const response = UrlFetchApp.fetch(url, options);
+        const json = JSON.parse(response.getContentText());
+
+        const items = Array.isArray(json?.data?.lines) ? json.data.lines : [];
+
+        if (items.length === 0) {
+          continuar = false;
+          Logger.log(`⚠ Fim dos dados na página ${page} da campanha ${idCampanha}`);
+        } else {
+          const data = items.map(item => [
+            item.date || '',
+            item.hour || '',
+            idCampanha,
+            item.stationId || '',
+            item.stationName || '',
+            item.city ? item.city.split(' / ')[0] : '',
+            item.client || '',
+            item.pieceType || '',
+            item.city ? item.city.split(' / ')[1] : '',
+            item.stationLogo || ''
+          ]);
+          insercoesMesAtual.push(...data);
+          page++;
+        }
+
+      } catch (e) {
+        Logger.log(`❌ Erro na campanha ${idCampanha}, página ${page}: ${e}`);
+        continuar = false;
+      }
+    }
+  }
+
+  if (insercoesMesAtual.length > 0) {
+    const linhaInicial = dadosParaManter.length + 1;
+    sheetDestino.getRange(linhaInicial, 1, insercoesMesAtual.length, cabecalho.length).setValues(insercoesMesAtual);
+    Logger.log(`✔ Inseridos ${insercoesMesAtual.length} registros paginados do mês atual na aba "${abaDestino}"`);
+  } else {
+    Logger.log('⚠ Nenhum dado do mês atual encontrado.');
+  }
+}
